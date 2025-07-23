@@ -1,0 +1,28 @@
+services:
+  db_recipes:
+    restart: always
+    image: postgres:16-alpine
+    volumes:
+      - ./postgresql:/var/lib/postgresql/data
+    env_file:
+      - ./.env.dev
+    networks:
+      - default
+
+  web_recipes:
+    restart: always
+    image: vabene1111/recipes:latest
+    env_file:
+      - ./.env.dev
+    volumes:
+      - ./staticfiles:/opt/recipes/staticfiles
+      - ./mediafiles:/opt/recipes/mediafiles
+    depends_on:
+      - db_recipes
+    networks:
+      - default
+    ports:
+      - "8080:8080"
+
+networks:
+  default:
