@@ -29,6 +29,7 @@ impl TandoorAuth {
             .client
             .post(&auth_url)
             .json(&auth_request)
+            .timeout(std::time::Duration::from_secs(10))
             .send()
             .await
             .map_err(|e| {

@@ -187,11 +187,46 @@ pub struct PaginatedResponse<T> {
 pub struct CreateRecipeRequest {
     pub name: String,
     pub description: Option<String>,
-    pub instructions: Option<String>,
     pub servings: Option<i32>,
-    pub working_time: Option<i32>,
-    pub waiting_time: Option<i32>,
-    pub keywords: Option<Vec<i32>>,
+    pub working_time: i32,
+    pub waiting_time: i32,
+    pub keywords: Vec<CreateKeywordRequest>,
+    pub steps: Vec<CreateStepRequest>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateKeywordRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateStepRequest {
+    pub name: Option<String>,
+    pub instruction: String,
+    pub ingredients: Vec<CreateStepIngredientRequest>,
+    pub time: Option<i32>,
+    pub order: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateStepIngredientRequest {
+    pub food: CreateFoodRequest,
+    pub unit: Option<CreateUnitRequest>,
+    pub amount: String,
+    pub note: Option<String>,
+    pub order: i32,
+    pub is_header: bool,
+    pub no_amount: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateFoodRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateUnitRequest {
+    pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

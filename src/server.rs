@@ -1,16 +1,15 @@
-use std::sync::Arc;
-use std::future::Future;
 use rmcp::{
-    ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, tool::Parameters},
     model::*,
     schemars,
     service::RequestContext,
-    tool, tool_handler, tool_router,
+    tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
 };
 use serde_json::json;
-use tokio::sync::Mutex;
+use std::future::Future;
+use std::sync::Arc;
 use std::sync::OnceLock;
+use tokio::sync::Mutex;
 
 use crate::client::TandoorClient;
 
@@ -43,6 +42,8 @@ pub struct CreateRecipeParams {
     pub prep_time: Option<i32>,
     #[serde(default)]
     pub cook_time: Option<i32>,
+    #[serde(default)]
+    pub keywords: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -202,17 +203,17 @@ impl TandoorMcpServer {
             tool_router: Self::tool_router(),
         }
     }
-    
+
     pub fn new_with_credentials(base_url: String, username: String, password: String) -> Self {
         // Store credentials globally so all instances can use them
         let _ = GLOBAL_CREDENTIALS.set((username, password));
-        
+
         Self {
             client: Arc::new(Mutex::new(TandoorClient::new(base_url))),
             tool_router: Self::tool_router(),
         }
     }
-    
+
     pub async fn set_global_auth_token(&self, token: String) -> Result<(), anyhow::Error> {
         let auth_storage = GLOBAL_AUTH.get_or_init(|| Arc::new(Mutex::new(None)));
         let mut auth = auth_storage.lock().await;
@@ -221,85 +222,90 @@ impl TandoorMcpServer {
         Ok(())
     }
 
-    pub async fn authenticate(&self, username: String, password: String) -> Result<(), anyhow::Error> {
+    pub async fn authenticate(
+        &self,
+        username: String,
+        password: String,
+    ) -> Result<(), anyhow::Error> {
         let mut client = self.client.lock().await;
         let result = client.authenticate(username, password).await;
-        
+
         if result.is_ok() {
             // Store the token globally for all instances to use
             if let Some(token) = client.get_token() {
                 self.set_global_auth_token(token.to_string()).await?;
             }
         }
-        
+
         result
     }
-    
-    async fn ensure_authenticated(&self) -> Result<(), anyhow::Error> {
-        let mut client = self.client.lock().await;
+
+    async fn ensure_authenticated(&self) -> Result<tokio::sync::MutexGuard<'_, TandoorClient>, anyhow::Error> {
+        tracing::info!("=== ensure_authenticated: acquiring client lock ===");
         
-        if client.is_authenticated() {
-            return Ok(());
-        }
+        // Add timeout to client lock acquisition
+        let client_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.client.lock()
+        ).await;
         
-        // Try to use global auth token first
-        let auth_storage = GLOBAL_AUTH.get_or_init(|| Arc::new(Mutex::new(None)));
-        let auth_guard = auth_storage.lock().await;
-        if let Some(token) = auth_guard.as_ref() {
-            tracing::debug!("Using global authentication token");
-            client.set_token(token.clone());
-            drop(auth_guard);
-            return Ok(());
-        }
-        drop(auth_guard);
-        
-        // If no global token, try to authenticate with stored credentials
-        if let Some((username, password)) = GLOBAL_CREDENTIALS.get() {
-            tracing::debug!("Auto-authenticating with stored credentials");
-            client.authenticate(username.clone(), password.clone()).await?;
-            
-            // Store the new token globally
-            if let Some(token) = client.get_token() {
-                let mut auth_guard = auth_storage.lock().await;
-                *auth_guard = Some(token.to_string());
-                tracing::debug!("Stored new global auth token");
+        let mut client = match client_result {
+            Ok(client) => {
+                tracing::info!("=== ensure_authenticated: client lock acquired ===");
+                client
+            },
+            Err(_) => {
+                tracing::error!("=== ensure_authenticated: TIMEOUT acquiring client lock ===");
+                return Err(anyhow::anyhow!("Timeout acquiring client lock"));
             }
-            
-            tracing::debug!("Auto-authentication successful");
-            Ok(())
+        };
+
+        if client.is_authenticated() {
+            tracing::info!("=== ensure_authenticated: already authenticated ===");
+            return Ok(client);
+        }
+
+        tracing::info!("=== ensure_authenticated: not authenticated, proceeding with auth ===");
+
+        // If no global token, try to authenticate with stored credentials directly
+        if let Some((username, password)) = GLOBAL_CREDENTIALS.get() {
+            tracing::info!("Auto-authenticating with stored credentials for user: {}", username);
+            let result = client
+                .authenticate(username.clone(), password.clone())
+                .await;
+
+            match result {
+                Ok(_) => {
+                    tracing::info!("Authentication successful");
+                    Ok(client)
+                },
+                Err(e) => {
+                    tracing::error!("Authentication failed: {}", e);
+                    Err(e)
+                }
+            }
         } else {
+            tracing::error!("No authentication credentials available");
             Err(anyhow::anyhow!("No authentication credentials available"))
         }
     }
-    
+
     pub async fn test_api_access(&self) -> Result<(), anyhow::Error> {
-        // Ensure we're authenticated first
-        self.ensure_authenticated().await?;
-        
-        let client = self.client.lock().await;
+        // Just check if we can authenticate - don't make actual API calls during startup
+        // to avoid holding locks during network I/O
+        let client = self.ensure_authenticated().await?;
         
         // Check if we have a token
         if client.is_authenticated() {
             if let Some(preview) = client.get_token_preview() {
-                tracing::debug!("Have token for API test: {}", preview);
+                tracing::info!("Authentication test successful - have token: {}", preview);
             }
+            Ok(())
         } else {
-            tracing::error!("No authentication token available for API test");
-            return Err(anyhow::anyhow!("No authentication token available"));
+            tracing::error!("Authentication test failed - no token available");
+            Err(anyhow::anyhow!("No authentication token available"))
         }
-        
-        // Try to make a simple API call to verify the token works
-        tracing::debug!("Testing API access by fetching keywords...");
-        match client.get_keywords().await {
-            Ok(response) => {
-                tracing::info!("API access test successful - found {} keywords", response.count);
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!("API access test failed: {}", e);
-                Err(e)
-            }
-        }
+        // Lock is automatically released here when client goes out of scope
     }
 
     // Recipe tools
@@ -308,9 +314,27 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<SearchRecipesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in search_recipes: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
-        match client.search_recipes(params.query.as_deref(), params.limit).await {
+        match client
+            .search_recipes(params.query.as_deref(), params.limit)
+            .await
+        {
             Ok(response) => {
                 let recipes_json: Vec<serde_json::Value> = response.results
                     .into_iter()
@@ -331,7 +355,7 @@ impl TandoorMcpServer {
                 let result = json!({
                     "recipes": recipes_json,
                     "total_count": response.count,
-                    "search_interpretation": format!("Found {} recipes{}", 
+                    "search_interpretation": format!("Found {} recipes{}",
                         response.count,
                         params.query.as_ref().map_or(String::new(), |q| format!(" matching '{}'", q))
                     )
@@ -346,7 +370,9 @@ impl TandoorMcpServer {
                     "error": "Failed to search recipes",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -356,7 +382,22 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<GetRecipeDetailsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in get_recipe_details: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         match client.get_recipe(params.id).await {
             Ok(recipe) => {
@@ -384,7 +425,8 @@ impl TandoorMcpServer {
                     }
                 }
 
-                let instructions: Vec<String> = recipe.steps
+                let instructions: Vec<String> = recipe
+                    .steps
                     .into_iter()
                     .map(|step| {
                         if step.name.is_empty() {
@@ -421,7 +463,9 @@ impl TandoorMcpServer {
                     "error": "Failed to get recipe details",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -431,16 +475,50 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<CreateRecipeParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in create_recipe: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
+
+        // Convert keywords from strings to CreateKeywordRequest
+        let keywords = params.keywords.unwrap_or_default()
+            .into_iter()
+            .map(|name| crate::client::types::CreateKeywordRequest { name })
+            .collect();
+
+        // Create a basic step from instructions if provided
+        let steps = if let Some(instructions) = params.instructions {
+            vec![crate::client::types::CreateStepRequest {
+                name: None,
+                instruction: instructions,
+                ingredients: vec![], // Empty ingredients for now
+                time: None,
+                order: 1,
+            }]
+        } else {
+            vec![] // Empty steps array if no instructions
+        };
 
         let request = crate::client::types::CreateRecipeRequest {
             name: params.name,
             description: params.description,
-            instructions: params.instructions,
             servings: params.servings,
-            working_time: params.prep_time,
-            waiting_time: params.cook_time,
-            keywords: None,
+            working_time: params.prep_time.unwrap_or(0),
+            waiting_time: params.cook_time.unwrap_or(0),
+            keywords,
+            steps,
         };
 
         match client.create_recipe(request).await {
@@ -462,46 +540,15 @@ impl TandoorMcpServer {
                 )]))
             }
             Err(e) => {
+                tracing::error!("create_recipe tool failed: {}", e);
                 let error = json!({
                     "error": "Failed to create recipe",
                     "details": e.to_string(),
                     "success": false
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
-            }
-        }
-    }
-
-    #[tool(description = "Import a recipe from an external URL")]
-    async fn import_recipe_from_url(
-        &self,
-        Parameters(params): Parameters<ImportRecipeParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
-
-        match client.import_recipe_from_url(&params.url).await {
-            Ok(recipe) => {
-                let result = json!({
-                    "id": recipe.id,
-                    "name": recipe.name,
-                    "description": recipe.description,
-                    "imported_from": params.url,
-                    "success": true,
-                    "message": "Recipe imported successfully"
-                });
-
-                Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&result).unwrap(),
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
                 )]))
-            }
-            Err(e) => {
-                let error = json!({
-                    "error": "Failed to import recipe",
-                    "url": params.url,
-                    "details": e.to_string(),
-                    "success": false
-                });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
             }
         }
     }
@@ -512,7 +559,22 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<AddToShoppingListParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in add_to_shopping_list: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         if let Some(items) = params.items {
             let mut requests = Vec::new();
@@ -594,7 +656,9 @@ impl TandoorMcpServer {
                 "message": "Please provide either 'items' array or 'request' text"
             });
 
-            Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+            Ok(CallToolResult::error(vec![Content::text(
+                error.to_string(),
+            )]))
         }
     }
 
@@ -603,11 +667,27 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<GetShoppingListParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in get_shopping_list: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         match client.get_shopping_list().await {
             Ok(response) => {
-                let items: Vec<serde_json::Value> = response.results
+                let items: Vec<serde_json::Value> = response
+                    .results
                     .into_iter()
                     .map(|entry| {
                         json!({
@@ -628,7 +708,11 @@ impl TandoorMcpServer {
                     let mut checked = Vec::new();
 
                     for item in items {
-                        if item.get("checked").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        if item
+                            .get("checked")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
                             checked.push(item);
                         } else {
                             unchecked.push(item);
@@ -654,11 +738,14 @@ impl TandoorMcpServer {
                 )]))
             }
             Err(e) => {
+                tracing::error!("get_shopping_list tool failed: {}", e);
                 let error = json!({
                     "error": "Failed to get shopping list",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -668,11 +755,27 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<SearchFoodsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in search_foods: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         match client.search_foods(&params.query, params.limit).await {
             Ok(response) => {
-                let foods_json: Vec<serde_json::Value> = response.results
+                let foods_json: Vec<serde_json::Value> = response
+                    .results
                     .into_iter()
                     .map(|food| {
                         json!({
@@ -697,11 +800,18 @@ impl TandoorMcpServer {
                 )]))
             }
             Err(e) => {
+                tracing::error!(
+                    "search_foods tool failed for query '{}': {}",
+                    params.query,
+                    e
+                );
                 let error = json!({
                     "error": "Failed to search foods",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -709,27 +819,29 @@ impl TandoorMcpServer {
     #[tool(description = "Get all available recipe keywords/tags")]
     async fn get_keywords(&self) -> Result<CallToolResult, McpError> {
         tracing::debug!("MCP tool call: get_keywords");
-        
+
         // Ensure we're authenticated before making API calls
-        if let Err(e) = self.ensure_authenticated().await {
-            tracing::error!("Authentication failed in get_keywords: {}", e);
-            let error = json!({
-                "error": "Authentication Error",
-                "message": "Failed to authenticate with Tandoor",
-                "details": e.to_string(),
-                "suggestion": "Check your Tandoor credentials and server connectivity"
-            });
-            return Ok(CallToolResult::error(vec![Content::text(
-                serde_json::to_string_pretty(&error).unwrap()
-            )]));
-        }
-        
-        let client = self.client.lock().await;
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in get_keywords: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         match client.get_keywords().await {
             Ok(response) => {
                 tracing::debug!("Successfully retrieved keywords from Tandoor API");
-                let keywords_json: Vec<serde_json::Value> = response.results
+                let keywords_json: Vec<serde_json::Value> = response
+                    .results
                     .into_iter()
                     .map(|keyword| {
                         json!({
@@ -751,7 +863,7 @@ impl TandoorMcpServer {
             }
             Err(e) => {
                 tracing::error!("get_keywords tool failed: {}", e);
-                
+
                 // Provide more specific error information
                 let error_details = if e.to_string().contains("Not authenticated") {
                     json!({
@@ -762,7 +874,7 @@ impl TandoorMcpServer {
                     })
                 } else if e.to_string().contains("Failed to connect") {
                     json!({
-                        "error": "Connection Error", 
+                        "error": "Connection Error",
                         "message": "Unable to connect to Tandoor server",
                         "details": e.to_string(),
                         "suggestion": "Check that Tandoor is running and accessible at the configured URL"
@@ -775,9 +887,9 @@ impl TandoorMcpServer {
                         "suggestion": "Check server logs for more details"
                     })
                 };
-                
+
                 Ok(CallToolResult::error(vec![Content::text(
-                    serde_json::to_string_pretty(&error_details).unwrap()
+                    serde_json::to_string_pretty(&error_details).unwrap(),
                 )]))
             }
         }
@@ -785,11 +897,34 @@ impl TandoorMcpServer {
 
     #[tool(description = "Get available measurement units")]
     async fn get_units(&self) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        tracing::info!("=== MCP tool call: get_units started ===");
+
+        // Ensure we're authenticated before making API calls
+        tracing::info!("Checking authentication for get_units");
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => {
+                tracing::info!("Authentication successful, proceeding with get_units API");
+                client
+            },
+            Err(e) => {
+                tracing::error!("Authentication failed in get_units: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         match client.get_units().await {
             Ok(response) => {
-                let units_json: Vec<serde_json::Value> = response.results
+                tracing::debug!("Successfully retrieved {} units", response.count);
+                let units_json: Vec<serde_json::Value> = response
+                    .results
                     .into_iter()
                     .map(|unit| {
                         json!({
@@ -813,11 +948,14 @@ impl TandoorMcpServer {
                 )]))
             }
             Err(e) => {
+                tracing::error!("get_units tool failed: {}", e);
                 let error = json!({
                     "error": "Failed to get units",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -828,11 +966,30 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<GetMealPlansParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in get_meal_plans: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
-        match client.get_meal_plans(Some(&params.from_date), Some(&params.to_date)).await {
+        match client
+            .get_meal_plans(Some(&params.from_date), Some(&params.to_date))
+            .await
+        {
             Ok(response) => {
-                let meal_plans_json: Vec<serde_json::Value> = response.results
+                let meal_plans_json: Vec<serde_json::Value> = response
+                    .results
                     .into_iter()
                     .filter(|plan| {
                         params.meal_type.as_ref().map_or(true, |mt| {
@@ -870,7 +1027,9 @@ impl TandoorMcpServer {
                     "error": "Failed to get meal plans",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -880,10 +1039,29 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<CreateMealPlanParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in create_meal_plan: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
-        let date = chrono::NaiveDate::parse_from_str(&params.date, "%Y-%m-%d")
-            .map_err(|e| McpError::invalid_params("Invalid date format", Some(serde_json::json!({"error": e.to_string()}))))?;
+        let date = chrono::NaiveDate::parse_from_str(&params.date, "%Y-%m-%d").map_err(|e| {
+            McpError::invalid_params(
+                "Invalid date format",
+                Some(serde_json::json!({"error": e.to_string()})),
+            )
+        })?;
 
         let request = crate::client::types::CreateMealPlanRequest {
             recipe: params.recipe_id,
@@ -920,7 +1098,9 @@ impl TandoorMcpServer {
                     "details": e.to_string(),
                     "success": false
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -930,7 +1110,22 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<DeleteMealPlanParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in delete_meal_plan: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         match client.delete_meal_plan(params.id).await {
             Ok(_) => {
@@ -952,18 +1147,36 @@ impl TandoorMcpServer {
                     "details": e.to_string(),
                     "success": false
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
 
     #[tool(description = "Get available meal types")]
     async fn get_meal_types(&self) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in get_meal_types: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         match client.get_meal_types().await {
             Ok(response) => {
-                let meal_types_json: Vec<serde_json::Value> = response.results
+                let meal_types_json: Vec<serde_json::Value> = response
+                    .results
                     .into_iter()
                     .map(|meal_type| {
                         json!({
@@ -990,7 +1203,9 @@ impl TandoorMcpServer {
                     "error": "Failed to get meal types",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -1001,7 +1216,22 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<CheckShoppingItemsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in check_shopping_items: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         let mut updated = Vec::new();
         let mut errors = Vec::new();
@@ -1013,7 +1243,10 @@ impl TandoorMcpServer {
                     amount: None,
                 };
 
-                match client.update_shopping_list_entry(item_id as i32, request).await {
+                match client
+                    .update_shopping_list_entry(item_id as i32, request)
+                    .await
+                {
                     Ok(entry) => {
                         updated.push(json!({
                             "id": entry.id,
@@ -1034,7 +1267,10 @@ impl TandoorMcpServer {
                 match client.get_shopping_list().await {
                     Ok(list_response) => {
                         if let Some(entry) = list_response.results.iter().find(|e| {
-                            e.food.name.to_lowercase().contains(&item_name.to_lowercase())
+                            e.food
+                                .name
+                                .to_lowercase()
+                                .contains(&item_name.to_lowercase())
                         }) {
                             let request = crate::client::types::UpdateShoppingListEntryRequest {
                                 checked: Some(true),
@@ -1089,7 +1325,22 @@ impl TandoorMcpServer {
 
     #[tool(description = "Clear checked items from shopping list and update pantry")]
     async fn clear_shopping_list(&self) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in clear_shopping_list: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         match client.get_shopping_list().await {
             Ok(response) => {
@@ -1137,7 +1388,7 @@ impl TandoorMcpServer {
                     "removed_items": removed_items,
                     "pantry_updates": pantry_updates,
                     "errors": errors,
-                    "summary": format!("Removed {} checked items, updated pantry for {} items", 
+                    "summary": format!("Removed {} checked items, updated pantry for {} items",
                         removed_items.len(), pantry_updates.len())
                 });
 
@@ -1150,7 +1401,9 @@ impl TandoorMcpServer {
                     "error": "Failed to get shopping list",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -1161,7 +1414,22 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<UpdatePantryParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in update_pantry: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         let mut updated = Vec::new();
         let mut errors = Vec::new();
@@ -1170,7 +1438,10 @@ impl TandoorMcpServer {
             match client.search_foods(&item.food, Some(1)).await {
                 Ok(foods_response) => {
                     if let Some(food) = foods_response.results.first() {
-                        match client.update_food_availability(food.id, item.available).await {
+                        match client
+                            .update_food_availability(food.id, item.available)
+                            .await
+                        {
                             Ok(updated_food) => {
                                 updated.push(json!({
                                     "id": updated_food.id,
@@ -1223,11 +1494,30 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<GetCookLogParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in get_cook_log: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
-        match client.get_cook_log(params.recipe_id, Some(params.days_back)).await {
+        match client
+            .get_cook_log(params.recipe_id, Some(params.days_back))
+            .await
+        {
             Ok(response) => {
-                let cook_log_json: Vec<serde_json::Value> = response.results
+                let cook_log_json: Vec<serde_json::Value> = response
+                    .results
                     .into_iter()
                     .map(|log| {
                         json!({
@@ -1259,7 +1549,9 @@ impl TandoorMcpServer {
                     "error": "Failed to get cook log",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -1269,7 +1561,22 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<LogCookedRecipeParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in log_cooked_recipe: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         let request = crate::client::types::CreateCookLogRequest {
             recipe: params.recipe_id,
@@ -1302,7 +1609,9 @@ impl TandoorMcpServer {
                     "details": e.to_string(),
                     "success": false
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }
@@ -1312,12 +1621,28 @@ impl TandoorMcpServer {
         &self,
         Parameters(params): Parameters<SuggestFromInventoryParams>,
     ) -> Result<CallToolResult, McpError> {
-        let client = self.client.lock().await;
+        // Ensure we're authenticated before making API calls
+        let client = match self.ensure_authenticated().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Authentication failed in suggest_from_inventory: {}", e);
+                let error = json!({
+                    "error": "Authentication Error",
+                    "message": "Failed to authenticate with Tandoor",
+                    "details": e.to_string(),
+                    "suggestion": "Check your Tandoor credentials and server connectivity"
+                });
+                return Ok(CallToolResult::error(vec![Content::text(
+                    serde_json::to_string_pretty(&error).unwrap(),
+                )]));
+            }
+        };
 
         // Get available foods in pantry
         match client.search_foods("", Some(100)).await {
             Ok(foods_response) => {
-                let available_foods: Vec<&crate::client::types::Food> = foods_response.results
+                let available_foods: Vec<&crate::client::types::Food> = foods_response
+                    .results
                     .iter()
                     .filter(|food| food.food_onhand)
                     .collect();
@@ -1349,27 +1674,35 @@ impl TandoorMcpServer {
                                     for ingredient in &step.ingredients {
                                         if !ingredient.is_header && !ingredient.no_amount {
                                             total_ingredients += 1;
-                                            
-                                            let ingredient_available = available_foods.iter().any(|food| {
-                                                food.name.to_lowercase() == ingredient.food.name.to_lowercase()
-                                            });
+
+                                            let ingredient_available =
+                                                available_foods.iter().any(|food| {
+                                                    food.name.to_lowercase()
+                                                        == ingredient.food.name.to_lowercase()
+                                                });
 
                                             if ingredient_available {
                                                 matching_ingredients += 1;
                                             } else {
-                                                missing_ingredients.push(ingredient.food.name.clone());
+                                                missing_ingredients
+                                                    .push(ingredient.food.name.clone());
                                             }
                                         }
                                     }
                                 }
 
                                 if total_ingredients > 0 {
-                                    let match_percentage = (matching_ingredients as f64 / total_ingredients as f64) * 100.0;
-                                    
+                                    let match_percentage = (matching_ingredients as f64
+                                        / total_ingredients as f64)
+                                        * 100.0;
+
                                     // Filter based on mode
                                     let should_include = match params.mode.as_str() {
                                         "maximum-use" => match_percentage >= 50.0, // At least 50% match
-                                        "expiring" => match_percentage >= 30.0 && missing_ingredients.len() <= 3, // Good match with few missing items
+                                        "expiring" => {
+                                            match_percentage >= 30.0
+                                                && missing_ingredients.len() <= 3
+                                        } // Good match with few missing items
                                         _ => match_percentage >= 60.0,
                                     };
 
@@ -1377,7 +1710,10 @@ impl TandoorMcpServer {
                                         let reason = if params.mode == "expiring" {
                                             format!("Uses {:.0}% of pantry ingredients, only {} missing items", match_percentage, missing_ingredients.len())
                                         } else {
-                                            format!("Uses {:.0}% of available ingredients", match_percentage)
+                                            format!(
+                                                "Uses {:.0}% of available ingredients",
+                                                match_percentage
+                                            )
                                         };
 
                                         recipe_suggestions.push(json!({
@@ -1397,9 +1733,17 @@ impl TandoorMcpServer {
 
                         // Sort by match percentage
                         recipe_suggestions.sort_by(|a, b| {
-                            let a_match = a.get("match_percentage").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let b_match = b.get("match_percentage").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            b_match.partial_cmp(&a_match).unwrap_or(std::cmp::Ordering::Equal)
+                            let a_match = a
+                                .get("match_percentage")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
+                            let b_match = b
+                                .get("match_percentage")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
+                            b_match
+                                .partial_cmp(&a_match)
+                                .unwrap_or(std::cmp::Ordering::Equal)
                         });
 
                         // Take top 10
@@ -1410,7 +1754,7 @@ impl TandoorMcpServer {
                             "available_ingredients": available_foods.iter().map(|f| &f.name).collect::<Vec<_>>(),
                             "mode": params.mode,
                             "total_available": available_foods.len(),
-                            "message": format!("Found {} recipe suggestions using your {} available ingredients", 
+                            "message": format!("Found {} recipe suggestions using your {} available ingredients",
                                 recipe_suggestions.len(), available_foods.len())
                         });
 
@@ -1423,7 +1767,9 @@ impl TandoorMcpServer {
                             "error": "Failed to search recipes",
                             "details": e.to_string()
                         });
-                        Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                        Ok(CallToolResult::error(vec![Content::text(
+                            error.to_string(),
+                        )]))
                     }
                 }
             }
@@ -1432,7 +1778,9 @@ impl TandoorMcpServer {
                     "error": "Failed to get inventory",
                     "details": e.to_string()
                 });
-                Ok(CallToolResult::error(vec![Content::text(error.to_string())]))
+                Ok(CallToolResult::error(vec![Content::text(
+                    error.to_string(),
+                )]))
             }
         }
     }

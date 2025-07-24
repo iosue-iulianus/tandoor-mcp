@@ -43,11 +43,11 @@ impl TandoorClient {
     fn get_auth_header(&self) -> Result<String> {
         match self.auth.get_token() {
             Some(token) => {
-                tracing::debug!("Using authentication token: {}...", &token[..token.len().min(10)]);
+                tracing::trace!("Using authentication token: {}...", &token[..token.len().min(10)]);
                 Ok(format!("Bearer {}", token))
             },
             None => {
-                tracing::error!("Attempted to make authenticated request without valid token");
+                tracing::warn!("Attempted to make authenticated request without valid token - server will handle re-authentication if credentials are available");
                 anyhow::bail!("Not authenticated - please verify credentials and re-authenticate")
             },
         }
@@ -70,44 +70,88 @@ impl TandoorClient {
             url.push('?');
             url.push_str(&params.join("&"));
         }
+        
+        tracing::debug!("Searching recipes with URL: {}", url);
+        tracing::trace!("Search parameters - query: {:?}, limit: {:?}", query, limit);
 
         let response = self
             .client
             .get(&url)
             .header("Authorization", auth_header)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error searching recipes: {}", e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to search recipes: {}", response.status());
+        let status = response.status();
+        tracing::trace!("Recipe search response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to search recipes with status {}: {}", status, error_body);
+            anyhow::bail!("Failed to search recipes: {} - {}", status, error_body);
         }
 
-        let recipes = response.json().await?;
+        let recipes = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse recipe search response: {}", e);
+                anyhow::anyhow!("Invalid response format: {}", e)
+            })?;
+        
+        tracing::debug!("Recipe search successful");
         Ok(recipes)
     }
 
     pub async fn get_recipe(&self, id: i32) -> Result<Recipe> {
         let auth_header = self.get_auth_header()?;
         let url = format!("{}/api/recipe/{}/", self.base_url, id);
+        
+        tracing::debug!("Getting recipe details for ID: {}", id);
 
         let response = self
             .client
             .get(&url)
             .header("Authorization", auth_header)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error getting recipe {}: {}", id, e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to get recipe: {}", response.status());
+        let status = response.status();
+        tracing::trace!("Get recipe response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to get recipe {} with status {}: {}", id, status, error_body);
+            
+            match status.as_u16() {
+                404 => anyhow::bail!("Recipe with ID {} not found", id),
+                403 => anyhow::bail!("Access denied to recipe {}", id),
+                _ => anyhow::bail!("Failed to get recipe: {} - {}", status, error_body),
+            }
         }
 
-        let recipe = response.json().await?;
+        let recipe = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse recipe response: {}", e);
+                anyhow::anyhow!("Invalid response format: {}", e)
+            })?;
+        
+        tracing::debug!("Successfully retrieved recipe: {}", id);
         Ok(recipe)
     }
 
     pub async fn create_recipe(&self, request: CreateRecipeRequest) -> Result<Recipe> {
         let auth_header = self.get_auth_header()?;
         let url = format!("{}/api/recipe/", self.base_url);
+        
+        tracing::debug!("Creating new recipe: {}", request.name);
+        tracing::trace!("Recipe details: servings={:?}, working_time={:?}, waiting_time={:?}", 
+            request.servings, request.working_time, request.waiting_time);
 
         let response = self
             .client
@@ -115,13 +159,28 @@ impl TandoorClient {
             .header("Authorization", auth_header)
             .json(&request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error creating recipe: {}", e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to create recipe: {}", response.status());
+        let status = response.status();
+        tracing::trace!("Create recipe response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to create recipe '{}' with status {}: {}", request.name, status, error_body);
+            anyhow::bail!("Failed to create recipe: {} - {}", status, error_body);
         }
 
-        let recipe = response.json().await?;
+        let recipe: Recipe = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse create recipe response: {}", e);
+                anyhow::anyhow!("Invalid response format: {}", e)
+            })?;
+        
+        tracing::info!("Successfully created recipe '{}' with ID: {}", request.name, recipe.id);
         Ok(recipe)
     }
 
@@ -129,6 +188,8 @@ impl TandoorClient {
         let auth_header = self.get_auth_header()?;
         let import_url = format!("{}/api/recipe-from-source/", self.base_url);
         let request = RecipeImport { url: url.to_string() };
+        
+        tracing::info!("Importing recipe from URL: {}", url);
 
         let response = self
             .client
@@ -136,13 +197,33 @@ impl TandoorClient {
             .header("Authorization", auth_header)
             .json(&request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error importing recipe from {}: {}", url, e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to import recipe: {}", response.status());
+        let status = response.status();
+        tracing::trace!("Import recipe response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to import recipe from {} with status {}: {}", url, status, error_body);
+            
+            match status.as_u16() {
+                400 => anyhow::bail!("Invalid URL or unsupported recipe site: {}", url),
+                404 => anyhow::bail!("Recipe import endpoint not available"),
+                _ => anyhow::bail!("Failed to import recipe: {} - {}", status, error_body),
+            }
         }
 
-        let recipe = response.json().await?;
+        let recipe: Recipe = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse import recipe response: {}", e);
+                anyhow::anyhow!("Invalid response format: {}", e)
+            })?;
+        
+        tracing::info!("Successfully imported recipe '{}' with ID: {}", recipe.name, recipe.id);
         Ok(recipe)
     }
 
@@ -154,19 +235,36 @@ impl TandoorClient {
         if let Some(l) = limit {
             url.push_str(&format!("&page_size={}", l));
         }
+        
+        tracing::debug!("Searching foods with query: '{}', limit: {:?}", query, limit);
 
         let response = self
             .client
             .get(&url)
             .header("Authorization", auth_header)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error searching foods: {}", e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to search foods: {}", response.status());
+        let status = response.status();
+        tracing::trace!("Food search response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to search foods '{}' with status {}: {}", query, status, error_body);
+            anyhow::bail!("Failed to search foods: {} - {}", status, error_body);
         }
 
-        let foods = response.json().await?;
+        let foods: PaginatedResponse<Food> = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse food search response: {}", e);
+                anyhow::anyhow!("Invalid response format: {}", e)
+            })?;
+        
+        tracing::debug!("Food search successful, found {} results", foods.count);
         Ok(foods)
     }
 
@@ -195,19 +293,36 @@ impl TandoorClient {
     pub async fn get_shopping_list(&self) -> Result<PaginatedResponse<ShoppingListEntry>> {
         let auth_header = self.get_auth_header()?;
         let url = format!("{}/api/shopping-list-entry/", self.base_url);
+        
+        tracing::debug!("Fetching shopping list");
 
         let response = self
             .client
             .get(&url)
             .header("Authorization", auth_header)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error getting shopping list: {}", e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to get shopping list: {}", response.status());
+        let status = response.status();
+        tracing::trace!("Shopping list response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to get shopping list with status {}: {}", status, error_body);
+            anyhow::bail!("Failed to get shopping list: {} - {}", status, error_body);
         }
 
-        let shopping_list = response.json().await?;
+        let shopping_list: PaginatedResponse<ShoppingListEntry> = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse shopping list response: {}", e);
+                anyhow::anyhow!("Invalid response format: {}", e)
+            })?;
+        
+        tracing::debug!("Successfully retrieved shopping list with {} items", shopping_list.count);
         Ok(shopping_list)
     }
 
@@ -234,6 +349,10 @@ impl TandoorClient {
     pub async fn add_bulk_to_shopping_list(&self, entries: Vec<CreateShoppingListEntryRequest>) -> Result<Vec<ShoppingListEntry>> {
         let auth_header = self.get_auth_header()?;
         let url = format!("{}/api/shopping-list-entry/bulk/", self.base_url);
+        let entry_count = entries.len();
+        tracing::debug!("Adding {} items to shopping list in bulk", entry_count);
+        tracing::trace!("Bulk shopping list items: {:?}", entries);
+        
         let request = BulkShoppingListRequest { entries };
 
         let response = self
@@ -242,13 +361,28 @@ impl TandoorClient {
             .header("Authorization", auth_header)
             .json(&request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error adding bulk items to shopping list: {}", e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to add bulk to shopping list: {}", response.status());
+        let status = response.status();
+        tracing::trace!("Bulk add response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to add bulk items with status {}: {}", status, error_body);
+            anyhow::bail!("Failed to add bulk to shopping list: {} - {}", status, error_body);
         }
 
-        let entries = response.json().await?;
+        let entries: Vec<ShoppingListEntry> = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse bulk add response: {}", e);
+                anyhow::anyhow!("Invalid response format: {}", e)
+            })?;
+        
+        tracing::info!("Successfully added {} items to shopping list", entries.len());
         Ok(entries)
     }
 
@@ -307,19 +441,36 @@ impl TandoorClient {
             url.push('?');
             url.push_str(&params.join("&"));
         }
+        
+        tracing::debug!("Getting meal plans from {:?} to {:?}", from_date, to_date);
 
         let response = self
             .client
             .get(&url)
             .header("Authorization", auth_header)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error getting meal plans: {}", e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to get meal plans: {}", response.status());
+        let status = response.status();
+        tracing::trace!("Meal plans response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to get meal plans with status {}: {}", status, error_body);
+            anyhow::bail!("Failed to get meal plans: {} - {}", status, error_body);
         }
 
-        let meal_plans = response.json().await?;
+        let meal_plans: PaginatedResponse<MealPlan> = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse meal plans response: {}", e);
+                anyhow::anyhow!("Invalid response format: {}", e)
+            })?;
+        
+        tracing::debug!("Successfully retrieved {} meal plans", meal_plans.count);
         Ok(meal_plans)
     }
 
@@ -400,19 +551,36 @@ impl TandoorClient {
             url.push('?');
             url.push_str(&params.join("&"));
         }
+        
+        tracing::debug!("Getting cook log for recipe_id: {:?}, days_back: {:?}", recipe_id, days_back);
 
         let response = self
             .client
             .get(&url)
             .header("Authorization", auth_header)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error getting cook log: {}", e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to get cook log: {}", response.status());
+        let status = response.status();
+        tracing::trace!("Cook log response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to get cook log with status {}: {}", status, error_body);
+            anyhow::bail!("Failed to get cook log: {} - {}", status, error_body);
         }
 
-        let cook_log = response.json().await?;
+        let cook_log: PaginatedResponse<CookLog> = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse cook log response: {}", e);
+                anyhow::anyhow!("Invalid response format: {}", e)
+            })?;
+        
+        tracing::debug!("Successfully retrieved {} cook log entries", cook_log.count);
         Ok(cook_log)
     }
 
@@ -483,19 +651,43 @@ impl TandoorClient {
     pub async fn get_units(&self) -> Result<PaginatedResponse<Unit>> {
         let auth_header = self.get_auth_header()?;
         let url = format!("{}/api/unit/", self.base_url);
+        
+        tracing::debug!("Making request to get units: {}", url);
 
         let response = self
             .client
             .get(&url)
             .header("Authorization", auth_header)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Network error getting units: {}", e);
+                anyhow::anyhow!("Failed to connect to Tandoor API: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to get units: {}", response.status());
+        let status = response.status();
+        tracing::debug!("Units response status: {}", status);
+        
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error response".to_string());
+            tracing::error!("Failed to get units with status {}: {}", status, error_body);
+            
+            match status.as_u16() {
+                401 => anyhow::bail!("Authentication expired or invalid. Please re-authenticate."),
+                403 => anyhow::bail!("Access denied to units endpoint. Check user permissions."),
+                404 => anyhow::bail!("Units endpoint not found. Check Tandoor version and API availability."),
+                500..=599 => anyhow::bail!("Tandoor server error getting units ({}): {}", status, error_body),
+                _ => anyhow::bail!("Failed to get units with status {}: {}", status, error_body),
+            }
         }
 
-        let units = response.json().await?;
+        let units: PaginatedResponse<Unit> = response.json().await
+            .map_err(|e| {
+                tracing::error!("Failed to parse units response: {}", e);
+                anyhow::anyhow!("Invalid response format from Tandoor server: {}", e)
+            })?;
+        
+        tracing::debug!("Successfully retrieved {} units", units.count);
         Ok(units)
     }
 }
