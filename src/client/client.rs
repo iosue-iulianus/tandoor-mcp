@@ -1,3 +1,5 @@
+//! HTTP client implementation for the Tandoor API.
+
 use anyhow::Result;
 use reqwest::Client;
 use crate::client::{
@@ -5,9 +7,49 @@ use crate::client::{
     types::*,
 };
 
+/// # Tandoor HTTP Client
+///
+/// A comprehensive HTTP client for interacting with the Tandoor recipe management API.
+/// Handles authentication, recipes, shopping lists, meal planning, and more.
+///
+/// ## Features
+///
+/// - **OAuth2 Authentication**: Handles Tandoor's token-based authentication
+/// - **Recipe Management**: Search, create, retrieve, and manage recipes
+/// - **Shopping Lists**: Add items, manage lists, check off completed items
+/// - **Meal Planning**: Plan meals and add ingredients to shopping lists
+/// - **Food Search**: Find foods and ingredients in the database
+/// - **Import Support**: Import recipes from URLs
+/// - **Rate Limit Handling**: Works with Tandoor's authentication limits
+///
+/// ## Example
+///
+/// ```no_run
+/// use mcp_tandoor::client::TandoorClient;
+///
+/// # async fn example() -> anyhow::Result<()> {
+/// let mut client = TandoorClient::new("http://localhost:8080".to_string());
+/// 
+/// // Authenticate
+/// client.authenticate("username".to_string(), "password".to_string()).await?;
+///
+/// // Search recipes
+/// let recipes = client.search_recipes(Some("pasta"), Some(10)).await?;
+/// 
+/// // Get recipe details  
+/// if let Some(recipe) = recipes.results.first() {
+///     let details = client.get_recipe(recipe.id).await?;
+///     println!("Recipe: {}", details.name);
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub struct TandoorClient {
+    /// Base URL of the Tandoor server
     base_url: String,
+    /// HTTP client for making requests
     client: Client,
+    /// Authentication handler
     auth: TandoorAuth,
 }
 
@@ -44,6 +86,7 @@ impl TandoorClient {
         match self.auth.get_token() {
             Some(token) => {
                 tracing::trace!("Using authentication token: {}...", &token[..token.len().min(10)]);
+                // Tandoor uses OAuth2 access tokens with Bearer authentication
                 Ok(format!("Bearer {}", token))
             },
             None => {
@@ -316,11 +359,34 @@ impl TandoorClient {
             anyhow::bail!("Failed to get shopping list: {} - {}", status, error_body);
         }
 
-        let shopping_list: PaginatedResponse<ShoppingListEntry> = response.json().await
+        // Handle both paginated response and simple array response
+        let response_text = response.text().await
             .map_err(|e| {
-                tracing::error!("Failed to parse shopping list response: {}", e);
-                anyhow::anyhow!("Invalid response format: {}", e)
+                tracing::error!("Failed to read shopping list response: {}", e);
+                anyhow::anyhow!("Failed to read response: {}", e)
             })?;
+        
+        let shopping_list: PaginatedResponse<ShoppingListEntry> = if response_text.trim().starts_with('[') {
+            // Simple array response (empty list case)
+            let entries: Vec<ShoppingListEntry> = serde_json::from_str(&response_text)
+                .map_err(|e| {
+                    tracing::error!("Failed to parse shopping list array response: {}", e);
+                    anyhow::anyhow!("Invalid array response format: {}", e)
+                })?;
+            PaginatedResponse {
+                count: entries.len() as i32,
+                next: None,
+                previous: None,
+                results: entries,
+            }
+        } else {
+            // Paginated response
+            serde_json::from_str(&response_text)
+                .map_err(|e| {
+                    tracing::error!("Failed to parse shopping list paginated response: {}", e);
+                    anyhow::anyhow!("Invalid paginated response format: {}", e)
+                })?
+        };
         
         tracing::debug!("Successfully retrieved shopping list with {} items", shopping_list.count);
         Ok(shopping_list)

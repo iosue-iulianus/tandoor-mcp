@@ -1,3 +1,24 @@
+//! # Tandoor MCP Server Implementation
+//!
+//! This module implements a Model Context Protocol (MCP) server that exposes Tandoor
+//! functionality as standardized tools for AI assistants. The server handles authentication,
+//! recipe management, shopping lists, meal planning, and more.
+//!
+//! ## Key Features
+//!
+//! - **Recipe Management**: Search, create, retrieve, and manage recipes
+//! - **Shopping Lists**: Add items, manage shopping lists, check off items
+//! - **Meal Planning**: Plan meals and add to shopping lists
+//! - **Food & Ingredient Search**: Find foods and ingredients in the database
+//! - **Import Capabilities**: Import recipes from URLs
+//! - **Unit Management**: Get available measurement units
+//! - **Keyword Management**: Get and search recipe keywords
+//!
+//! ## Authentication
+//!
+//! The server supports both credential-based authentication and pre-set tokens
+//! to work around Tandoor's strict rate limiting (10 auth requests per day).
+
 use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::Parameters},
     model::*,
@@ -186,17 +207,53 @@ fn default_days_until_expiry() -> i32 {
 }
 
 // Global shared authentication state
+/// Global authentication token storage to handle Tandoor's rate limiting
 static GLOBAL_AUTH: OnceLock<Arc<Mutex<Option<String>>>> = OnceLock::new();
+
+/// Global credentials storage for automatic re-authentication
 static GLOBAL_CREDENTIALS: OnceLock<(String, String)> = OnceLock::new();
 
+/// # Tandoor MCP Server
+///
+/// The main MCP server implementation that provides Tandoor functionality through
+/// standardized tools. This server handles all communication with Tandoor APIs
+/// and exposes them as MCP tools for AI assistants.
+///
+/// ## Rate Limiting Considerations
+///
+/// Tandoor has aggressive rate limiting on authentication endpoints (10 requests/day).
+/// The server handles this by:
+/// - Storing authentication tokens globally
+/// - Reusing tokens across requests
+/// - Supporting pre-set tokens via environment variables
+///
+/// ## Example Usage
+///
+/// ```no_run
+/// use mcp_tandoor::server::TandoorMcpServer;
+///
+/// // Create server with credentials
+/// let server = TandoorMcpServer::new_with_credentials(
+///     "http://localhost:8080".to_string(),
+///     "admin".to_string(),
+///     "password".to_string()
+/// );
+///
+/// // Or set a pre-authenticated token
+/// server.set_global_auth_token("your_token".to_string()).await.unwrap();
+/// ```
 #[derive(Clone)]
 pub struct TandoorMcpServer {
+    /// Thread-safe client for Tandoor API communication
     client: Arc<Mutex<TandoorClient>>,
+    /// MCP tool router for handling tool requests
     tool_router: ToolRouter<TandoorMcpServer>,
 }
 
 #[tool_router]
 impl TandoorMcpServer {
+    /// Create a new Tandoor MCP server with just a base URL.
+    /// Authentication will need to be handled separately.
     pub fn new(base_url: String) -> Self {
         Self {
             client: Arc::new(Mutex::new(TandoorClient::new(base_url))),
@@ -204,6 +261,16 @@ impl TandoorMcpServer {
         }
     }
 
+    /// Create a new Tandoor MCP server with credentials for automatic authentication.
+    /// 
+    /// The credentials are stored globally and will be used for automatic re-authentication
+    /// when tokens expire. This is the recommended constructor for most use cases.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - The base URL of the Tandoor server (e.g., "http://localhost:8080")
+    /// * `username` - Tandoor username for authentication
+    /// * `password` - Tandoor password for authentication
     pub fn new_with_credentials(base_url: String, username: String, password: String) -> Self {
         // Store credentials globally so all instances can use them
         let _ = GLOBAL_CREDENTIALS.set((username, password));
@@ -214,6 +281,15 @@ impl TandoorMcpServer {
         }
     }
 
+    /// Set a pre-authenticated token to avoid rate limiting.
+    ///
+    /// This is useful when you have a token from a previous authentication
+    /// or from an external source. Tandoor limits authentication to 10 requests
+    /// per day, so reusing tokens is important for reliability.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - A valid Tandoor OAuth2 access token
     pub async fn set_global_auth_token(&self, token: String) -> Result<(), anyhow::Error> {
         let auth_storage = GLOBAL_AUTH.get_or_init(|| Arc::new(Mutex::new(None)));
         let mut auth = auth_storage.lock().await;

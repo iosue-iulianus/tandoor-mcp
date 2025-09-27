@@ -1,3 +1,26 @@
+//! # Tandoor MCP Server
+//! 
+//! A Model Context Protocol (MCP) server that provides tools for interacting with Tandoor,
+//! a recipe management system. This server allows AI assistants to search recipes, create
+//! new recipes, manage shopping lists, and more through a standardized protocol.
+//!
+//! ## Environment Variables
+//! 
+//! - `TANDOOR_BASE_URL`: Tandoor server URL (default: http://localhost:8080)
+//! - `TANDOOR_USERNAME`: Tandoor username for authentication (default: admin)  
+//! - `TANDOOR_PASSWORD`: Tandoor password for authentication (default: admin)
+//! - `BIND_ADDR`: Address to bind the MCP server (default: 127.0.0.1:3001)
+//! - `RUST_LOG`: Logging level (info, debug, trace, etc.)
+//!
+//! ## Usage
+//!
+//! ```bash
+//! TANDOOR_BASE_URL=http://your-tandoor-server:8080 \
+//! TANDOOR_USERNAME=your_username \
+//! TANDOOR_PASSWORD=your_password \
+//! cargo run
+//! ```
+
 use mcp_tandoor::server::TandoorMcpServer;
 use rmcp::transport::sse_server::{SseServer, SseServerConfig};
 use std::env;

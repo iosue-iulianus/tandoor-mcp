@@ -1,10 +1,33 @@
+//! Authentication handling for Tandoor API.
+//!
+//! This module manages OAuth2 token-based authentication with Tandoor servers.
+//! It handles the critical rate limiting that Tandoor imposes on authentication
+//! endpoints (10 requests per day).
+
 use anyhow::Result;
 use reqwest::Client;
 use crate::client::types::{AuthRequest, AuthToken};
 
+/// # Tandoor Authentication Handler
+///
+/// Manages OAuth2 token-based authentication for Tandoor API access.
+/// 
+/// ## Rate Limiting
+///
+/// **IMPORTANT**: Tandoor has very strict rate limiting on authentication endpoints.
+/// Only 10 authentication requests are allowed per day per IP address. This handler
+/// caches tokens to minimize authentication requests.
+///
+/// ## Token Format
+///
+/// Tandoor uses OAuth2 access tokens with the format `tda_xxxxxxxx_xxxx_xxxx_xxxx_xxxxxxxxxxxx`.
+/// These tokens are used with `Bearer` authentication in API requests.
 pub struct TandoorAuth {
+    /// Base URL of the Tandoor server
     base_url: String,
+    /// HTTP client for authentication requests
     client: Client,
+    /// Cached authentication token
     token: Option<String>,
 }
 
