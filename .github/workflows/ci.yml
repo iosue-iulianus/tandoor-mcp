@@ -49,8 +49,8 @@ jobs:
       - name: Check clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Run integration tests
+        run: ./scripts/test.sh
 
       - name: Check build
         run: cargo build --release --verbose

@@ -4,7 +4,7 @@
 //! through the Model Context Protocol (MCP). It consists of two main components:
 //!
 //! ## Client Module
-//! 
+//!
 //! The [`client`] module provides a direct HTTP client for the Tandoor API, handling
 //! authentication, recipe management, shopping lists, and more.
 //!
@@ -20,7 +20,7 @@
 //!
 //! // Use the client directly
 //! let mut client = TandoorClient::new("http://localhost:8080".to_string());
-//! 
+//!
 //! // Or create an MCP server
 //! let server = TandoorMcpServer::new_with_credentials(
 //!     "http://localhost:8080".to_string(),

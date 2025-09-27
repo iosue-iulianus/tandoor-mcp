@@ -1,11 +1,11 @@
 //! # Tandoor MCP Server
-//! 
+//!
 //! A Model Context Protocol (MCP) server that provides tools for interacting with Tandoor,
 //! a recipe management system. This server allows AI assistants to search recipes, create
 //! new recipes, manage shopping lists, and more through a standardized protocol.
 //!
 //! ## Environment Variables
-//! 
+//!
 //! - `TANDOOR_BASE_URL`: Tandoor server URL (default: http://localhost:8080)
 //! - `TANDOOR_USERNAME`: Tandoor username for authentication (default: admin)  
 //! - `TANDOOR_PASSWORD`: Tandoor password for authentication (default: admin)
@@ -52,9 +52,9 @@ async fn main() -> anyhow::Result<()> {
     let test_server = TandoorMcpServer::new_with_credentials(
         base_url.clone(),
         username.clone(),
-        password.clone()
+        password.clone(),
     );
-    
+
     if let Err(e) = test_server
         .authenticate(username.clone(), password.clone())
         .await
@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::error!("  - Check if you're being rate limited (wait before retrying)");
         std::process::exit(1);
     }
-    
+
     // Test that we can actually use the token to make an API call
     tracing::info!("Testing API access with token...");
     match test_server.test_api_access().await {
@@ -79,10 +79,12 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!("API access test failed: {}", e);
             tracing::warn!("This may be due to Tandoor permission configuration.");
             tracing::warn!("The server will continue, but some functionality may be limited.");
-            tracing::warn!("If you encounter issues, check Tandoor space permissions and user roles.");
+            tracing::warn!(
+                "If you encounter issues, check Tandoor space permissions and user roles."
+            );
         }
     }
-    
+
     tracing::info!("Successfully authenticated and validated API access with Tandoor");
 
     // Create server configuration and start SSE server
@@ -103,12 +105,12 @@ async fn main() -> anyhow::Result<()> {
     let base_url_clone = base_url.clone();
     let username_clone = username.clone();
     let password_clone = password.clone();
-    
+
     let ct = sse_server.with_service(move || {
         TandoorMcpServer::new_with_credentials(
             base_url_clone.clone(),
             username_clone.clone(),
-            password_clone.clone()
+            password_clone.clone(),
         )
     });
 

@@ -18,8 +18,8 @@
 //! - [`Recipe`] maps "created_at"/"updated_at" to "created"/"updated" fields
 //! - Many fields are optional to handle varying API response formats
 
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// OAuth2 authentication token response from Tandoor.
 ///
@@ -156,9 +156,8 @@ pub struct Keyword {
 /// Custom deserializer for Keyword to handle API inconsistencies.
 ///
 /// The Tandoor API returns keywords with different field names depending on the endpoint:
-/// - Search endpoints use "label" 
+/// - Search endpoints use "label"
 /// - Detail endpoints use "name"
-/// This deserializer handles both formats transparently.
 impl<'de> serde::Deserialize<'de> for Keyword {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -201,14 +200,18 @@ impl<'de> serde::Deserialize<'de> for Keyword {
                         "parent" => parent = map.next_value()?,
                         "numchild" => numchild = map.next_value()?,
                         "full_name" => full_name = map.next_value()?,
-                        _ => { let _ = map.next_value::<serde_json::Value>()?; }
+                        _ => {
+                            let _ = map.next_value::<serde_json::Value>()?;
+                        }
                     }
                 }
 
                 let id = id.ok_or_else(|| de::Error::missing_field("id"))?;
-                
+
                 // Use name if present, otherwise use label (handles API inconsistency)
-                let name = name.or_else(|| label.clone()).ok_or_else(|| de::Error::missing_field("name or label"))?;
+                let name = name
+                    .or_else(|| label.clone())
+                    .ok_or_else(|| de::Error::missing_field("name or label"))?;
 
                 Ok(Keyword {
                     id,

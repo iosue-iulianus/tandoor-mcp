@@ -16,7 +16,7 @@
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! let mut client = TandoorClient::new("http://localhost:8080".to_string());
-//! 
+//!
 //! // Authenticate with Tandoor
 //! client.authenticate("username".to_string(), "password".to_string()).await?;
 //!
@@ -28,6 +28,7 @@
 //! ```
 
 pub mod auth;
+#[allow(clippy::module_inception)]
 pub mod client;
 pub mod types;
 

@@ -262,7 +262,7 @@ impl TandoorMcpServer {
     }
 
     /// Create a new Tandoor MCP server with credentials for automatic authentication.
-    /// 
+    ///
     /// The credentials are stored globally and will be used for automatic re-authentication
     /// when tokens expire. This is the recommended constructor for most use cases.
     ///
@@ -316,20 +316,20 @@ impl TandoorMcpServer {
         result
     }
 
-    async fn ensure_authenticated(&self) -> Result<tokio::sync::MutexGuard<'_, TandoorClient>, anyhow::Error> {
+    async fn ensure_authenticated(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, TandoorClient>, anyhow::Error> {
         tracing::info!("=== ensure_authenticated: acquiring client lock ===");
-        
+
         // Add timeout to client lock acquisition
-        let client_result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.client.lock()
-        ).await;
-        
+        let client_result =
+            tokio::time::timeout(std::time::Duration::from_secs(5), self.client.lock()).await;
+
         let mut client = match client_result {
             Ok(client) => {
                 tracing::info!("=== ensure_authenticated: client lock acquired ===");
                 client
-            },
+            }
             Err(_) => {
                 tracing::error!("=== ensure_authenticated: TIMEOUT acquiring client lock ===");
                 return Err(anyhow::anyhow!("Timeout acquiring client lock"));
@@ -345,7 +345,10 @@ impl TandoorMcpServer {
 
         // If no global token, try to authenticate with stored credentials directly
         if let Some((username, password)) = GLOBAL_CREDENTIALS.get() {
-            tracing::info!("Auto-authenticating with stored credentials for user: {}", username);
+            tracing::info!(
+                "Auto-authenticating with stored credentials for user: {}",
+                username
+            );
             let result = client
                 .authenticate(username.clone(), password.clone())
                 .await;
@@ -354,7 +357,7 @@ impl TandoorMcpServer {
                 Ok(_) => {
                     tracing::info!("Authentication successful");
                     Ok(client)
-                },
+                }
                 Err(e) => {
                     tracing::error!("Authentication failed: {}", e);
                     Err(e)
@@ -370,7 +373,7 @@ impl TandoorMcpServer {
         // Just check if we can authenticate - don't make actual API calls during startup
         // to avoid holding locks during network I/O
         let client = self.ensure_authenticated().await?;
-        
+
         // Check if we have a token
         if client.is_authenticated() {
             if let Some(preview) = client.get_token_preview() {
@@ -433,7 +436,7 @@ impl TandoorMcpServer {
                     "total_count": response.count,
                     "search_interpretation": format!("Found {} recipes{}",
                         response.count,
-                        params.query.as_ref().map_or(String::new(), |q| format!(" matching '{}'", q))
+                        params.query.as_ref().map_or(String::new(), |q| format!(" matching '{q}'"))
                     )
                 });
 
@@ -569,7 +572,9 @@ impl TandoorMcpServer {
         };
 
         // Convert keywords from strings to CreateKeywordRequest
-        let keywords = params.keywords.unwrap_or_default()
+        let keywords = params
+            .keywords
+            .unwrap_or_default()
             .into_iter()
             .map(|name| crate::client::types::CreateKeywordRequest { name })
             .collect();
@@ -981,7 +986,7 @@ impl TandoorMcpServer {
             Ok(client) => {
                 tracing::info!("Authentication successful, proceeding with get_units API");
                 client
-            },
+            }
             Err(e) => {
                 tracing::error!("Authentication failed in get_units: {}", e);
                 let error = json!({
@@ -1068,7 +1073,7 @@ impl TandoorMcpServer {
                     .results
                     .into_iter()
                     .filter(|plan| {
-                        params.meal_type.as_ref().map_or(true, |mt| {
+                        params.meal_type.as_ref().is_none_or(|mt| {
                             plan.meal_type.name.to_lowercase() == mt.to_lowercase()
                         })
                     })
@@ -1787,8 +1792,7 @@ impl TandoorMcpServer {
                                             format!("Uses {:.0}% of pantry ingredients, only {} missing items", match_percentage, missing_ingredients.len())
                                         } else {
                                             format!(
-                                                "Uses {:.0}% of available ingredients",
-                                                match_percentage
+                                                "Uses {match_percentage:.0}% of available ingredients"
                                             )
                                         };
 
