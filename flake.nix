@@ -26,7 +26,6 @@
           inherit system overlays;
         };
 
-        # Automatically read rust-toolchain.toml
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in
       {
@@ -35,7 +34,6 @@
             rustToolchain
             pkg-config
             openssl
-            # Add any other dependencies your project needs
           ];
         };
 
@@ -48,11 +46,7 @@
             lockFile = ./Cargo.lock;
           };
 
-          # Use the same toolchain for building
           nativeBuildInputs = [ rustToolchain ];
-          buildInputs = with pkgs; [
-            # Add runtime dependencies here
-          ];
         };
       }
     );
