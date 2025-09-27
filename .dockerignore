@@ -1,0 +1,46 @@
+# Rust build artifacts
+target/
+
+# IDE files
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Development files
+.env*
+flake.*
+shell.nix
+rust-toolchain.toml
+
+# Test files
+tests/
+
+# Local development
+postgresql/
+staticfiles/
+mediafiles/
+tandoor/
+
+# Docker files
+docker-compose.yml
+Dockerfile*
+
+# CI/CD
+.github/
+
+# Nix
+.direnv/
+result
+
+# Temporary files
+*.tmp
+*.log
+.DS_Store
+tandoor/
