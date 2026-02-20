@@ -23,5 +23,6 @@
 
 # Logs
 *.log
+*.bak
 
 tandoor/
