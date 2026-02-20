@@ -16,9 +16,16 @@ Talk to your Tandoor instance through any MCP-compatible client (Claude Desktop,
 
 ## Setup
 
-### 1. Build from source
+### 1. Get the server
 
-Requires Rust 1.85+. On Linux you'll also need `pkg-config` and `libssl-dev`.
+**Linux / WSL** — download the prebuilt binary from the [Releases page](https://github.com/iosue-iulianus/tandoor-mcp/releases):
+
+```bash
+chmod +x mcp-tandoor-linux-x86_64
+./mcp-tandoor-linux-x86_64
+```
+
+**macOS / other platforms / build from source** (requires [Rust 1.85+](https://rustup.rs)):
 
 ```bash
 # Install Rust (if you don't have it)
@@ -30,12 +37,10 @@ sudo apt install pkg-config libssl-dev    # Debian/Ubuntu
 sudo dnf install pkg-config openssl-devel # Fedora/RHEL
 sudo pacman -S pkg-conf openssl           # Arch
 
-# Build
+# Build and run
 git clone https://github.com/iosue-iulianus/tandoor-mcp.git
 cd tandoor-mcp
 cargo build --release
-
-# Run the server
 ./target/release/mcp-tandoor
 ```
 
