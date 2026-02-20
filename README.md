@@ -17,7 +17,7 @@ A Model Context Protocol (MCP) server for [Tandoor Recipes](https://tandoor.dev)
 
 ```bash
 git clone https://github.com/ChristopherJMiller/tandoor-mcp.git
-cd mcp-tandoor
+cd tandoor-mcp
 ```
 
 2. **Configure environment variables**:
@@ -262,8 +262,8 @@ This means the space scope isn't activated. Follow the Tandoor Configuration sec
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-repo/mcp-tandoor
-cd mcp-tandoor
+git clone https://github.com/ChristopherJMiller/tandoor-mcp.git
+cd tandoor-mcp
 
 # Build in development mode
 cargo build
