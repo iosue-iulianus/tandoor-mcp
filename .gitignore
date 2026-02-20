@@ -8,6 +8,8 @@
 /mediafiles
 
 .mcp.json
+.env
+.env.dev
 
 # IDE
 .idea/

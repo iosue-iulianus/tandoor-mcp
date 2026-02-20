@@ -103,6 +103,7 @@ impl TandoorClient {
         &self,
         query: Option<&str>,
         limit: Option<i32>,
+        page: Option<i32>,
     ) -> Result<PaginatedResponse<Recipe>> {
         let auth_header = self.get_auth_header()?;
         let mut url = format!("{}/api/recipe/", self.base_url);
@@ -113,6 +114,9 @@ impl TandoorClient {
         }
         if let Some(l) = limit {
             params.push(format!("page_size={l}"));
+        }
+        if let Some(p) = page {
+            params.push(format!("page={p}"));
         }
 
         if !params.is_empty() {
@@ -258,6 +262,32 @@ impl TandoorClient {
             request.name,
             recipe.id
         );
+        Ok(recipe)
+    }
+
+    pub async fn patch_recipe_keywords(
+        &self,
+        recipe_id: i32,
+        keywords: Vec<CreateKeywordRequest>,
+    ) -> Result<Recipe> {
+        let auth_header = self.get_auth_header()?;
+        let url = format!("{}/api/recipe/{}/", self.base_url, recipe_id);
+        let request = UpdateRecipeKeywordsRequest { keywords };
+
+        let response = self
+            .client
+            .patch(&url)
+            .header("Authorization", auth_header)
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to update recipe keywords: {}", body);
+        }
+
+        let recipe = response.json().await?;
         Ok(recipe)
     }
 
