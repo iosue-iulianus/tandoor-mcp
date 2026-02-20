@@ -135,6 +135,10 @@ RUST_LOG=debug cargo run          # Run with debug logging
 ./scripts/test.sh down            # Stop local Tandoor
 ```
 
+## Acknowledgments
+
+Originally forked from [ChristopherJMiller/tandoor-mcp](https://github.com/ChristopherJMiller/tandoor-mcp).
+
 ## License
 
 MIT
