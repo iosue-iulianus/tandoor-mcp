@@ -890,6 +890,77 @@ impl TandoorClient {
         Ok(keywords)
     }
 
+    // Recipe book operations
+    pub async fn get_recipe_books(&self) -> Result<PaginatedResponse<RecipeBook>> {
+        let auth_header = self.get_auth_header()?;
+        let url = format!("{}/api/recipe-book/?page_size=100", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", auth_header)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to get recipe books: {}", body);
+        }
+
+        let books = response.json().await?;
+        Ok(books)
+    }
+
+    pub async fn create_recipe_book(&self, request: CreateRecipeBookRequest) -> Result<RecipeBook> {
+        let auth_header = self.get_auth_header()?;
+        let url = format!("{}/api/recipe-book/", self.base_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", auth_header)
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to create recipe book: {}", body);
+        }
+
+        let book = response.json().await?;
+        Ok(book)
+    }
+
+    pub async fn add_recipe_to_book(
+        &self,
+        book_id: i32,
+        recipe_id: i32,
+    ) -> Result<RecipeBookEntry> {
+        let auth_header = self.get_auth_header()?;
+        let url = format!("{}/api/recipe-book-entry/", self.base_url);
+        let request = CreateRecipeBookEntryRequest {
+            book: book_id,
+            recipe: recipe_id,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", auth_header)
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to add recipe to book: {}", body);
+        }
+
+        let entry = response.json().await?;
+        Ok(entry)
+    }
+
     pub async fn get_units(&self) -> Result<PaginatedResponse<Unit>> {
         let auth_header = self.get_auth_header()?;
         let url = format!("{}/api/unit/", self.base_url);

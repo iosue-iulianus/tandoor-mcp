@@ -224,6 +224,19 @@ fn default_keyword_mode() -> String {
     "set".to_string()
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateRecipeBookParams {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddRecipeToBookParams {
+    pub book_id: i32,
+    pub recipe_id: i32,
+}
+
 // Global shared authentication state
 /// Global authentication token storage to handle Tandoor's rate limiting
 static GLOBAL_AUTH: OnceLock<Arc<Mutex<Option<String>>>> = OnceLock::new();
@@ -734,6 +747,92 @@ impl TandoorMcpServer {
                     error.to_string(),
                 )]))
             }
+        }
+    }
+
+    #[tool(description = "Get all recipe books")]
+    async fn get_recipe_books(&self) -> Result<CallToolResult, McpError> {
+        let client = match self.ensure_authenticated().await {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    json!({"error": "Authentication Error", "details": e.to_string()}).to_string(),
+                )]));
+            }
+        };
+
+        match client.get_recipe_books().await {
+            Ok(response) => {
+                let books: Vec<serde_json::Value> = response
+                    .results
+                    .into_iter()
+                    .map(|b| json!({"id": b.id, "name": b.name, "description": b.description}))
+                    .collect();
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&json!({"books": books, "total_count": response.count})).unwrap(),
+                )]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(
+                json!({"error": "Failed to get recipe books", "details": e.to_string()}).to_string(),
+            )])),
+        }
+    }
+
+    #[tool(description = "Create a new recipe book (collection)")]
+    async fn create_recipe_book(
+        &self,
+        Parameters(params): Parameters<CreateRecipeBookParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = match self.ensure_authenticated().await {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    json!({"error": "Authentication Error", "details": e.to_string()}).to_string(),
+                )]));
+            }
+        };
+
+        let request = crate::client::types::CreateRecipeBookRequest {
+            name: params.name,
+            description: params.description.unwrap_or_default(),
+            shared: vec![],
+        };
+
+        match client.create_recipe_book(request).await {
+            Ok(book) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(
+                    &json!({"id": book.id, "name": book.name, "description": book.description, "success": true}),
+                ).unwrap(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(
+                json!({"error": "Failed to create recipe book", "details": e.to_string()}).to_string(),
+            )])),
+        }
+    }
+
+    #[tool(description = "Add a recipe to a recipe book")]
+    async fn add_recipe_to_book(
+        &self,
+        Parameters(params): Parameters<AddRecipeToBookParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = match self.ensure_authenticated().await {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    json!({"error": "Authentication Error", "details": e.to_string()}).to_string(),
+                )]));
+            }
+        };
+
+        match client.add_recipe_to_book(params.book_id, params.recipe_id).await {
+            Ok(entry) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(
+                    &json!({"id": entry.id, "book_id": entry.book, "recipe_id": entry.recipe, "success": true}),
+                ).unwrap(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(
+                json!({"error": "Failed to add recipe to book", "details": e.to_string()}).to_string(),
+            )])),
         }
     }
 

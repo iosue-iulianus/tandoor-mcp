@@ -511,3 +511,39 @@ pub struct UpdateRecipeKeywordsRequest {
     pub keywords: Vec<CreateKeywordRequest>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecipeBook {
+    pub id: i32,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_by: serde_json::Value,
+    #[serde(default)]
+    pub filter: Option<serde_json::Value>,
+    #[serde(default)]
+    pub order: Option<i32>,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecipeBookEntry {
+    pub id: i32,
+    pub book: i32,
+    pub book_content: Option<serde_json::Value>,
+    pub recipe: i32,
+    pub recipe_content: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateRecipeBookRequest {
+    pub name: String,
+    pub description: String,
+    pub shared: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateRecipeBookEntryRequest {
+    pub book: i32,
+    pub recipe: i32,
+}
+
