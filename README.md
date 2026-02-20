@@ -16,7 +16,7 @@ A Model Context Protocol (MCP) server for [Tandoor Recipes](https://tandoor.dev)
 1. **Clone the repository**:
 
 ```bash
-git clone https://github.com/your-repo/mcp-tandoor
+git clone https://github.com/ChristopherJMiller/tandoor-mcp.git
 cd mcp-tandoor
 ```
 
