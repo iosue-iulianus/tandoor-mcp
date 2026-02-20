@@ -669,7 +669,9 @@ impl TandoorMcpServer {
         }
     }
 
-    #[tool(description = "Update the keywords/tags on an existing recipe. Use mode='set' to replace all tags (default), or mode='add' to append to existing tags.")]
+    #[tool(
+        description = "Update the keywords/tags on an existing recipe. Use mode='set' to replace all tags (default), or mode='add' to append to existing tags."
+    )]
     async fn update_recipe_keywords(
         &self,
         Parameters(params): Parameters<UpdateRecipeKeywordsParams>,
@@ -769,11 +771,15 @@ impl TandoorMcpServer {
                     .map(|b| json!({"id": b.id, "name": b.name, "description": b.description}))
                     .collect();
                 Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&json!({"books": books, "total_count": response.count})).unwrap(),
+                    serde_json::to_string_pretty(
+                        &json!({"books": books, "total_count": response.count}),
+                    )
+                    .unwrap(),
                 )]))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(
-                json!({"error": "Failed to get recipe books", "details": e.to_string()}).to_string(),
+                json!({"error": "Failed to get recipe books", "details": e.to_string()})
+                    .to_string(),
             )])),
         }
     }

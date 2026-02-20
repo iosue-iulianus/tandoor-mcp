@@ -3,14 +3,17 @@ use mcp_tandoor::TandoorClient;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
+#[allow(dead_code)]
 pub struct TestEnvironment {
     pub client: TandoorClient,
 }
 
 // Global token storage to share across all tests
+#[allow(dead_code)]
 static SHARED_TOKEN: OnceLock<String> = OnceLock::new();
 
 impl TestEnvironment {
+    #[allow(dead_code)]
     pub async fn new() -> Result<Self> {
         let base_url = std::env::var("TANDOOR_BASE_URL")
             .unwrap_or_else(|_| "http://localhost:8080".to_string());

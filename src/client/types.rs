@@ -546,4 +546,3 @@ pub struct CreateRecipeBookEntryRequest {
     pub book: i32,
     pub recipe: i32,
 }
-
